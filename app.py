@@ -66,7 +66,7 @@ try:
         X_scaled = scaler.fit_transform(X)
         
         # Train Isolation Forest
-        contamination = 0.17  # Optimal value from your analysis
+        contamination = 0.33  # Updated: More sensitive detection
         model = IsolationForest(
             contamination=contamination,
             random_state=42,
@@ -177,10 +177,10 @@ except Exception as e:
     data_df['true_anomaly'] = data_df['status'] == 'faulty'
     
     threshold = 0.7
-    best_precision = 0.85
-    best_recall = 0.75
-    best_f1 = 0.80
-    best_contamination = 0.15
+    best_precision = 0.79
+    best_recall = 0.46
+    best_f1 = 0.58
+    best_contamination = 0.33
     
     print(f"✓ Dummy data created: {len(data_df):,} rows")
     print("=" * 60)
