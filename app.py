@@ -356,42 +356,126 @@ def update_dashboard(selected_equipment_id):
     
     # Create Anomaly Score Graph
     fig_anomaly = go.Figure()
+    
+    # Add the main anomaly score line
     fig_anomaly.add_trace(go.Scatter(
         x=equipment_data.index,
         y=equipment_data['anomaly_score'],
         mode='lines+markers',
         name='Anomaly Score',
         line=dict(color='#9b59b6', width=2),
-        marker=dict(size=4)
+        marker=dict(size=4),
+        showlegend=True
     ))
     
-    # Add threshold line at 0.30 (30% - normal range limit)
+    # Add threshold lines
+    # Threshold 1: 30% (All Clear limit)
     fig_anomaly.add_hline(
         y=0.30,
         line_dash="dash",
-        line_color="red",
+        line_color="orange",
         line_width=2,
-        annotation_text="Threshold: 0.30 (30% limit)",
-        annotation_position="right"
+        annotation_text="Warning: 0.30 (30%)",
+        annotation_position="right",
+        annotation=dict(font=dict(color="orange"))
     )
     
-    # Mark anomalies
+    # Threshold 2: 70% (Critical limit)
+    fig_anomaly.add_hline(
+        y=0.70,
+        line_dash="dash",
+        line_color="red",
+        line_width=2,
+        annotation_text="Critical: 0.70 (70%)",
+        annotation_position="right",
+        annotation=dict(font=dict(color="red"))
+    )
+    
+    # Add colored background zones
+    fig_anomaly.add_hrect(
+        y0=0, y1=0.30,
+        fillcolor="green", opacity=0.1,
+        layer="below", line_width=0,
+        annotation_text="All Clear (0-30%)",
+        annotation_position="left",
+        annotation=dict(font=dict(size=10, color="green"))
+    )
+    
+    fig_anomaly.add_hrect(
+        y0=0.30, y1=0.70,
+        fillcolor="orange", opacity=0.1,
+        layer="below", line_width=0,
+        annotation_text="Monitor Closely (30-70%)",
+        annotation_position="left",
+        annotation=dict(font=dict(size=10, color="orange"))
+    )
+    
+    fig_anomaly.add_hrect(
+        y0=0.70, y1=1.0,
+        fillcolor="red", opacity=0.1,
+        layer="below", line_width=0,
+        annotation_text="Critical (70-100%)",
+        annotation_position="left",
+        annotation=dict(font=dict(size=10, color="red"))
+    )
+    
+    # Mark anomalies with color coding based on severity
     if len(anomaly_indices) > 0:
-        fig_anomaly.add_trace(go.Scatter(
-            x=anomaly_indices,
-            y=equipment_data.loc[anomaly_indices, 'anomaly_score'],
-            mode='markers',
-            name='Detected Anomaly',
-            marker=dict(color='red', size=10, symbol='x', line=dict(width=2))
-        ))
+        anomaly_scores = equipment_data.loc[anomaly_indices, 'anomaly_score']
+        
+        # Separate anomalies by severity level
+        # Warning level: 30-70%
+        warning_mask = (anomaly_scores >= 0.30) & (anomaly_scores < 0.70)
+        warning_indices = anomaly_indices[warning_mask]
+        
+        # Critical level: 70-100%
+        critical_mask = anomaly_scores >= 0.70
+        critical_indices = anomaly_indices[critical_mask]
+        
+        # Add warning level anomalies (amber/orange)
+        if len(warning_indices) > 0:
+            fig_anomaly.add_trace(go.Scatter(
+                x=warning_indices,
+                y=equipment_data.loc[warning_indices, 'anomaly_score'],
+                mode='markers',
+                name='Warning (30-70%)',
+                marker=dict(
+                    color='orange',
+                    size=12,
+                    symbol='diamond',
+                    line=dict(width=2, color='darkorange')
+                )
+            ))
+        
+        # Add critical level anomalies (red)
+        if len(critical_indices) > 0:
+            fig_anomaly.add_trace(go.Scatter(
+                x=critical_indices,
+                y=equipment_data.loc[critical_indices, 'anomaly_score'],
+                mode='markers',
+                name='Critical (70-100%)',
+                marker=dict(
+                    color='red',
+                    size=12,
+                    symbol='x',
+                    line=dict(width=2, color='darkred')
+                )
+            ))
     
     fig_anomaly.update_layout(
-        title='Isolation Forest Anomaly Score Trend',
+        title='Isolation Forest Anomaly Score Trend (with Severity Levels)',
         xaxis_title='Sample Index',
         yaxis_title='Anomaly Score (0-1)',
         hovermode='x unified',
         template='plotly_white',
-        height=400
+        height=500,
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1
+        )
     )
     
     # Create Feature Space Graph
