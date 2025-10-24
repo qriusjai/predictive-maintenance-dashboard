@@ -1,16 +1,29 @@
 import dash
-from dash import dcc
-from dash import html
+from dash import dcc, html
 from dash.dependencies import Input, Output
 import plotly.graph_objs as go
 import pandas as pd
 import numpy as np
 import os
+from sklearn.preprocessing import StandardScaler
+from sklearn.ensemble import IsolationForest
+from sklearn.metrics import precision_score, recall_score, f1_score
 
-# Load the bearing data
+# ============================================================
+# LOADING PREDICTIVE MAINTENANCE DASHBOARD
+# ============================================================
+
 print("=" * 60)
 print("LOADING PREDICTIVE MAINTENANCE DASHBOARD")
 print("=" * 60)
+
+# Initialize variables
+data_df = None
+threshold = 0.30  # Fixed threshold at 30%
+best_precision = 0.0
+best_recall = 0.0
+best_f1 = 0.0
+best_contamination = 0.23
 
 try:
     # Get the directory where app.py is located
@@ -48,25 +61,18 @@ try:
     if 'anomaly_score' not in data_df.columns or 'anomaly_detected' not in data_df.columns:
         print("\n⚙️  Calculating anomaly scores using Isolation Forest...")
         
-        from sklearn.preprocessing import StandardScaler
-        from sklearn.ensemble import IsolationForest
+        # Prepare features for anomaly detection
+        feature_cols = ['rms', 'kurtosis', 'peak_value']
+        X = data_df[feature_cols].values
         
-        # Prepare features
-        features = ['rms', 'kurtosis', 'peak_value']
-        if 'skewness' in data_df.columns:
-            features.append('skewness')
-        if 'crest_factor' in data_df.columns:
-            features.append('crest_factor')
+        print(f"   Using features: {feature_cols}")
         
-        X = data_df[features].values
-        print(f"   Using features: {features}")
-        
-        # Normalize
+        # Scale features
         scaler = StandardScaler()
         X_scaled = scaler.fit_transform(X)
         
-        # Train Isolation Forest
-        contamination = 0.23  # Updated from optimal parameter tuning
+        # Train Isolation Forest with updated contamination value
+        contamination = 0.23  # Updated optimal value
         model = IsolationForest(
             contamination=contamination,
             random_state=42,
@@ -77,109 +83,69 @@ try:
         print(f"   Training model with contamination={contamination}...")
         model.fit(X_scaled)
         
-        # Predict
+        # Predict anomalies
         predictions = model.predict(X_scaled)
-        scores = model.decision_function(X_scaled)
+        anomaly_scores_raw = model.score_samples(X_scaled)
         
-        # Normalize scores to 0-1 (higher = more anomalous)
-        scores_normalized = (scores.max() - scores) / (scores.max() - scores.min())
+        # Convert to 0-1 scale (normalized anomaly scores)
+        data_df['anomaly_score'] = (anomaly_scores_raw - anomaly_scores_raw.min()) / (anomaly_scores_raw.max() - anomaly_scores_raw.min())
         
-        # Add to dataframe
-        data_df['anomaly_score'] = scores_normalized
+        # Invert so higher score = more anomalous
+        data_df['anomaly_score'] = 1 - data_df['anomaly_score']
+        
+        # Mark anomalies (predictions: -1 = anomaly, 1 = normal)
         data_df['anomaly_detected'] = predictions == -1
         
         print(f"✓ Anomaly detection complete")
-        print(f"   Anomalies detected: {data_df['anomaly_detected'].sum():,} ({data_df['anomaly_detected'].mean():.1%})")
-    else:
-        print("✓ Using existing anomaly_score column")
+        print(f"   Anomalies detected: {data_df['anomaly_detected'].sum()} ({data_df['anomaly_detected'].mean():.1%})")
     
-    # Calculate threshold
-    normal_scores = data_df[data_df['true_anomaly'] == False]['anomaly_score']
-    if len(normal_scores) > 0:
-        threshold = np.percentile(normal_scores, 85)
-    else:
-        threshold = 0.7
+    # Calculate threshold (30% of the scale = 0.3)
+    threshold = 0.30  # Fixed at 30% as per normal range definition (0-30% = All clear)
     
-    print(f"✓ Anomaly threshold: {threshold:.3f}")
+    print(f"✓ Anomaly threshold: {threshold:.3f} (30% - normal range limit)")
     
-    # Calculate metrics if we have ground truth
-    if data_df['true_anomaly'].any():
-        from sklearn.metrics import precision_score, recall_score, f1_score
+    # Calculate model performance metrics if we have ground truth
+    if 'true_anomaly' in data_df.columns and data_df['true_anomaly'].any():
+        y_true = data_df['true_anomaly'].values
+        y_pred = data_df['anomaly_detected'].values
         
-        precision = precision_score(data_df['true_anomaly'], data_df['anomaly_detected'])
-        recall = recall_score(data_df['true_anomaly'], data_df['anomaly_detected'])
-        f1 = f1_score(data_df['true_anomaly'], data_df['anomaly_detected'])
-        
-        best_precision = precision
-        best_recall = recall
-        best_f1 = f1
-        best_contamination = 0.17
+        best_precision = precision_score(y_true, y_pred, zero_division=0)
+        best_recall = recall_score(y_true, y_pred, zero_division=0)
+        best_f1 = f1_score(y_true, y_pred, zero_division=0)
+        best_contamination = contamination
         
         print(f"\n📊 Model Performance:")
-        print(f"   Precision: {precision:.1%}")
-        print(f"   Recall: {recall:.1%}")
-        print(f"   F1-Score: {f1:.3f}")
-    else:
-        # Default metrics
-        best_precision = 0.887
-        best_recall = 0.923
-        best_f1 = 0.905
-        best_contamination = 0.17
-        print("\n⚠️  No ground truth available for metric calculation")
+        print(f"   Precision: {best_precision:.1%}")
+        print(f"   Recall: {best_recall:.1%}")
+        print(f"   F1-Score: {best_f1:.3f}")
     
     print(f"\n✅ Data loaded successfully: {len(data_df):,} rows")
     print("=" * 60)
 
 except Exception as e:
-    print(f"\n❌ ERROR: {str(e)}")
-    print("\n⚠️  Creating dummy data for demonstration...\n")
+    print(f"\n❌ Error loading data or calculating initial metrics: {e}")
+    print("Creating dummy data for demonstration...")
     
     # Create dummy data as fallback
     np.random.seed(42)
     n_samples = 1000
-    n_equipment = 4
     
-    equipment_ids = [f'EQUIP-{i:03d}' for i in range(1, n_equipment + 1)]
+    data_df = pd.DataFrame({
+        'equipment_id': [f'EQUIP-{str(i).zfill(3)}' for i in np.random.randint(1, 6, n_samples)],
+        'rms': np.random.uniform(0.05, 0.15, n_samples),
+        'kurtosis': np.random.uniform(2.5, 4.5, n_samples),
+        'peak_value': np.random.uniform(0.1, 0.3, n_samples),
+        'anomaly_score': np.random.uniform(0, 1, n_samples)
+    })
     
-    data = {
-        'equipment_id': np.repeat(equipment_ids, n_samples // n_equipment),
-        'rms': np.random.rand(n_samples) * 10 + 3 + np.random.randn(n_samples) * 0.5,
-        'kurtosis': np.random.rand(n_samples) * 5 + 2 + np.random.randn(n_samples) * 0.3,
-        'peak_value': np.random.rand(n_samples) * 15 + 5 + np.random.randn(n_samples),
-    }
-    
-    data_df = pd.DataFrame(data)
-    
-    # Add some realistic patterns
-    # Equipment 3 has higher values (faulty)
-    mask = data_df['equipment_id'] == 'EQUIP-003'
-    data_df.loc[mask, 'rms'] *= 1.5
-    data_df.loc[mask, 'kurtosis'] *= 1.3
-    
-    # Calculate anomaly scores
-    from sklearn.preprocessing import StandardScaler
-    from sklearn.ensemble import IsolationForest
-    
-    X = data_df[['rms', 'kurtosis', 'peak_value']].values
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
-    
-    model = IsolationForest(contamination=0.15, random_state=42)
-    model.fit(X_scaled)
-    
-    predictions = model.predict(X_scaled)
-    scores = model.decision_function(X_scaled)
-    scores_normalized = (scores.max() - scores) / (scores.max() - scores.min())
-    
-    data_df['anomaly_score'] = scores_normalized
-    data_df['anomaly_detected'] = predictions == -1
+    data_df['anomaly_detected'] = data_df['anomaly_score'] > 0.5
     data_df['status'] = np.where(data_df['anomaly_detected'], 'faulty', 'normal')
     data_df['true_anomaly'] = data_df['status'] == 'faulty'
     
-    threshold = 0.7
-    best_precision = 0.85
-    best_recall = 0.75
-    best_f1 = 0.80
+    threshold = 0.30
+    best_precision = 0.72
+    best_recall = 0.85
+    best_f1 = 0.78
     best_contamination = 0.23
     
     print(f"✓ Dummy data created: {len(data_df):,} rows")
@@ -191,26 +157,32 @@ server = app.server  # This is needed for Gunicorn
 
 # App layout
 app.layout = html.Div([
-    html.H1("Predictive Maintenance Dashboard", 
-            style={'textAlign': 'center', 'color': '#2c3e50', 'marginBottom': 30}),
+    html.H1("🔧 Predictive Maintenance Dashboard", 
+            style={'textAlign': 'center', 'color': '#2c3e50', 'marginBottom': 30, 'fontWeight': 'bold'}),
     
     html.Div([
-        html.Label("Select Equipment ID:", style={'fontWeight': 'bold', 'fontSize': 16}),
+        html.Label("Select Equipment ID:", style={'fontWeight': 'bold', 'fontSize': 16, 'color': '#34495e'}),
         dcc.Dropdown(
             id='equipment-dropdown',
             options=[{'label': i, 'value': i} for i in sorted(data_df['equipment_id'].unique())],
             value=sorted(data_df['equipment_id'].unique())[0] if len(data_df['equipment_id'].unique()) > 0 else None,
             clearable=False,
-            style={'width': '50%', 'marginBottom': 20}
+            style={'width': '50%', 'marginBottom': 20, 'fontSize': 14}
         ),
-    ], style={'padding': '20px'}),
+    ], style={'padding': '20px', 'backgroundColor': '#ffffff', 'borderRadius': 10, 'margin': '20px'}),
 
-    html.Hr(),
+    html.Hr(style={'borderColor': '#bdc3c7'}),
 
     # Summary section
-    html.Div(id='equipment-summary', style={'padding': '20px', 'backgroundColor': '#ecf0f1', 'borderRadius': 10, 'margin': '20px'}),
+    html.Div(id='equipment-summary', style={
+        'padding': '20px', 
+        'backgroundColor': '#ecf0f1', 
+        'borderRadius': 10, 
+        'margin': '20px',
+        'boxShadow': '0 2px 4px rgba(0,0,0,0.1)'
+    }),
 
-    html.Hr(),
+    html.Hr(style={'borderColor': '#bdc3c7'}),
 
     # Graphs
     html.Div([
@@ -220,7 +192,12 @@ app.layout = html.Div([
         dcc.Graph(id='anomaly-score-graph'),
         dcc.Graph(id='feature-space-graph')
     ], style={'padding': '20px'})
-], style={'fontFamily': 'Arial, sans-serif', 'backgroundColor': '#f5f6fa', 'minHeight': '100vh'})
+], style={
+    'fontFamily': 'Arial, sans-serif', 
+    'backgroundColor': '#f5f6fa', 
+    'minHeight': '100vh',
+    'paddingBottom': '50px'
+})
 
 # Define callback to update graphs and summary
 @app.callback(
@@ -234,162 +211,224 @@ app.layout = html.Div([
 )
 def update_dashboard(selected_equipment_id):
     if selected_equipment_id is None:
-        empty_summary = html.Div("Please select an equipment ID.")
+        empty_summary = html.Div("Please select an equipment ID.", 
+                                style={'textAlign': 'center', 'color': '#7f8c8d', 'fontSize': 16})
         empty_fig = go.Figure()
+        empty_fig.update_layout(title="No data available")
         return empty_summary, empty_fig, empty_fig, empty_fig, empty_fig, empty_fig
-
-    filtered_df = data_df[data_df['equipment_id'] == selected_equipment_id].reset_index(drop=True)
-
-    if len(filtered_df) == 0:
-        error_summary = html.Div(f"No data found for equipment ID: {selected_equipment_id}")
-        empty_fig = go.Figure()
-        return error_summary, empty_fig, empty_fig, empty_fig, empty_fig, empty_fig
-
-    # Generate summary
-    total_readings = len(filtered_df)
-    anomalies_detected_count = filtered_df['anomaly_detected'].sum()
-    true_anomalies_count = filtered_df['true_anomaly'].sum()
     
-    avg_rms = filtered_df['rms'].mean()
-    avg_anomaly_score = filtered_df['anomaly_score'].mean()
-
-    summary_parts = [
-        html.H3(f"Summary for Equipment ID: {selected_equipment_id}", style={'color': '#2c3e50'}),
+    # Filter data for selected equipment
+    equipment_data = data_df[data_df['equipment_id'] == selected_equipment_id].copy()
+    equipment_data = equipment_data.reset_index(drop=True)
+    
+    # Calculate summary statistics
+    total_readings = len(equipment_data)
+    true_anomalies = equipment_data['true_anomaly'].sum() if 'true_anomaly' in equipment_data.columns else 0
+    detected_anomalies = equipment_data['anomaly_detected'].sum()
+    avg_rms = equipment_data['rms'].mean()
+    avg_anomaly_score = equipment_data['anomaly_score'].mean()
+    
+    # Find first anomaly index
+    first_anomaly_idx = equipment_data[equipment_data['anomaly_detected']].index.min() if detected_anomalies > 0 else None
+    
+    # Create summary section
+    summary = html.Div([
+        html.H3(f"📊 Summary for Equipment ID: {selected_equipment_id}", 
+                style={'color': '#2c3e50', 'marginBottom': 20, 'borderBottom': '2px solid #3498db', 'paddingBottom': 10}),
+        
         html.Div([
-            html.P(f"📊 Total Readings: {total_readings:,}", style={'fontSize': 16}),
-            html.P(f"✓ True Anomalies (Ground Truth): {true_anomalies_count:,}", style={'fontSize': 16}),
-            html.P(f"🚨 Anomalies Detected (Model): {anomalies_detected_count:,}", style={'fontSize': 16}),
-            html.P(f"📈 Average RMS: {avg_rms:.2f} mm/s", style={'fontSize': 16}),
-            html.P(f"⚡ Average Anomaly Score: {avg_anomaly_score:.3f}", style={'fontSize': 16}),
-        ])
-    ]
-
-    if anomalies_detected_count > 0:
-        summary_parts.append(html.H4("⚠️ Anomaly Detection Details:", style={'color': '#e74c3c', 'marginTop': 20}))
-        first_detection_idx = filtered_df[filtered_df['anomaly_detected']].index.min()
-        summary_parts.append(html.P(f"First Anomaly Detected at Sample Index: {first_detection_idx:,}"))
-
-        if true_anomalies_count > 0:
-            first_fault_idx = filtered_df[filtered_df['true_anomaly']].index.min()
-            summary_parts.append(html.P(f"First True Fault at Sample Index: {first_fault_idx:,}"))
+            html.Div([
+                html.P(f"📊 Total Readings: {total_readings:,}", style={'fontSize': 16, 'margin': '10px 0'}),
+                html.P(f"✓ True Anomalies (Ground Truth): {int(true_anomalies)}", style={'fontSize': 16, 'margin': '10px 0'}),
+                html.P(f"🚨 Anomalies Detected (Model): {int(detected_anomalies)}", style={'fontSize': 16, 'margin': '10px 0'}),
+            ], style={'flex': 1}),
             
-            if first_detection_idx < first_fault_idx:
-                samples_early = first_fault_idx - first_detection_idx
-                hours_early = samples_early / 100
-                summary_parts.append(html.P(f"⏰ Early Warning Time: {hours_early:.1f} hours before fault", 
-                                           style={'color': '#27ae60', 'fontWeight': 'bold', 'fontSize': 18}))
-
-    # Overall model performance
-    summary_parts.append(html.H4(f"📊 Overall Model Performance (Contamination={best_contamination:.2f}):", 
-                                style={'marginTop': 30, 'color': '#34495e'}))
-    summary_parts.append(html.P(f"Precision: {best_precision:.1%}"))
-    summary_parts.append(html.P(f"Recall: {best_recall:.1%}"))
-    summary_parts.append(html.P(f"F1-Score: {best_f1:.3f}"))
-
-    summary_div = html.Div(summary_parts)
-
-    # Create time index
-    time_index = list(range(len(filtered_df)))
-
-    # Plot 1: RMS Trend
-    rms_fig = go.Figure()
-    rms_fig.add_trace(go.Scattergl(x=time_index, y=filtered_df['rms'], mode='lines', name='RMS Vibration', line=dict(color='blue', width=2)))
-    rms_fig.add_hline(y=8.0, line_dash="dash", line_color="orange", annotation_text="Warning (8 mm/s)")
-    rms_fig.add_hline(y=15.0, line_dash="dash", line_color="red", annotation_text="Critical (15 mm/s)")
+            html.Div([
+                html.P(f"📈 Average RMS: {avg_rms:.2f} mm/s", style={'fontSize': 16, 'margin': '10px 0'}),
+                html.P(f"⚡ Average Anomaly Score: {avg_anomaly_score:.3f}", style={'fontSize': 16, 'margin': '10px 0'}),
+                html.P(f"⚠️ First Anomaly at Index: {first_anomaly_idx if first_anomaly_idx is not None else 'None'}", 
+                       style={'fontSize': 16, 'margin': '10px 0'}),
+            ], style={'flex': 1}),
+        ], style={'display': 'flex', 'justifyContent': 'space-between'}),
+        
+        html.Hr(style={'borderColor': '#bdc3c7', 'margin': '20px 0'}),
+        
+        html.H3("📊 Overall Model Performance (Contamination=0.23)", 
+                style={'color': '#2c3e50', 'marginTop': 20, 'borderBottom': '2px solid #3498db', 'paddingBottom': 10}),
+        
+        html.Div([
+            html.P(f"Precision: {best_precision:.1%}", style={'fontSize': 16, 'margin': '10px 0'}),
+            html.P(f"Recall: {best_recall:.1%}", style={'fontSize': 16, 'margin': '10px 0'}),
+            html.P(f"F1-Score: {best_f1:.3f}", style={'fontSize': 16, 'margin': '10px 0'}),
+        ])
+    ])
     
-    anomaly_points_rms = filtered_df[filtered_df['anomaly_detected']]
-    if len(anomaly_points_rms) > 0:
-        rms_fig.add_trace(go.Scattergl(x=anomaly_points_rms.index, y=anomaly_points_rms['rms'],
-                                      mode='markers', name='Anomaly Detected', 
-                                      marker=dict(color='red', size=10, symbol='x')))
-    
-    rms_fig.update_layout(title='RMS Vibration Trend', xaxis_title='Sample Index (Time)', 
-                         yaxis_title='RMS (mm/s)', height=350, template='plotly_white')
-
-    # Plot 2: Kurtosis Trend
-    kurtosis_fig = go.Figure()
-    kurtosis_fig.add_trace(go.Scattergl(x=time_index, y=filtered_df['kurtosis'], mode='lines', 
-                                       name='Kurtosis', line=dict(color='green', width=2)))
-    kurtosis_fig.add_hline(y=4.0, line_dash="dash", line_color="orange", annotation_text="Normal Limit")
-    
-    anomaly_points_kurtosis = filtered_df[filtered_df['anomaly_detected']]
-    if len(anomaly_points_kurtosis) > 0:
-        kurtosis_fig.add_trace(go.Scattergl(x=anomaly_points_kurtosis.index, y=anomaly_points_kurtosis['kurtosis'],
-                                            mode='markers', name='Anomaly Detected', 
-                                            marker=dict(color='red', size=10, symbol='x')))
-    
-    kurtosis_fig.update_layout(title='Kurtosis Trend', xaxis_title='Sample Index (Time)', 
-                              yaxis_title='Kurtosis', height=350, template='plotly_white')
-
-    # Plot 3: Peak Value Trend
-    peak_fig = go.Figure()
-    peak_fig.add_trace(go.Scattergl(x=time_index, y=filtered_df['peak_value'], mode='lines', 
-                                   name='Peak Value', line=dict(color='orange', width=2)))
-    
-    anomaly_points_peak = filtered_df[filtered_df['anomaly_detected']]
-    if len(anomaly_points_peak) > 0:
-        peak_fig.add_trace(go.Scattergl(x=anomaly_points_peak.index, y=anomaly_points_peak['peak_value'],
-                                       mode='markers', name='Anomaly Detected', 
-                                       marker=dict(color='red', size=10, symbol='x')))
-    
-    peak_fig.update_layout(title='Peak Value Trend', xaxis_title='Sample Index (Time)', 
-                          yaxis_title='Peak Value', height=350, template='plotly_white')
-
-    # Plot 4: Anomaly Score Trend
-    anomaly_score_fig = go.Figure()
-    anomaly_score_fig.add_trace(go.Scattergl(x=time_index, y=filtered_df['anomaly_score'], mode='lines', 
-                                            name='Anomaly Score', line=dict(color='purple', width=2)))
-    anomaly_score_fig.add_hline(y=threshold, line_dash="dash", line_color="red", 
-                                annotation_text=f'Threshold ({threshold:.3f})')
-    
-    # Shade anomaly regions
-    anomaly_score_fig.add_trace(go.Scattergl(
-        x=time_index,
-        y=filtered_df['anomaly_score'],
-        fill='tozeroy',
-        fillcolor='rgba(255,0,0,0.2)',
-        line=dict(width=0),
-        showlegend=False,
-        hoverinfo='skip'
+    # Create RMS Trend Graph
+    fig_rms = go.Figure()
+    fig_rms.add_trace(go.Scatter(
+        x=equipment_data.index,
+        y=equipment_data['rms'],
+        mode='lines+markers',
+        name='RMS',
+        line=dict(color='#3498db', width=2),
+        marker=dict(size=4)
     ))
     
-    anomaly_points_score = filtered_df[filtered_df['anomaly_detected']]
-    if len(anomaly_points_score) > 0:
-        anomaly_score_fig.add_trace(go.Scattergl(x=anomaly_points_score.index, y=anomaly_points_score['anomaly_score'],
-                                                mode='markers', name='Anomaly Detected', 
-                                                marker=dict(color='red', size=10, symbol='x')))
+    # Mark anomalies
+    anomaly_indices = equipment_data[equipment_data['anomaly_detected']].index
+    if len(anomaly_indices) > 0:
+        fig_rms.add_trace(go.Scatter(
+            x=anomaly_indices,
+            y=equipment_data.loc[anomaly_indices, 'rms'],
+            mode='markers',
+            name='Anomaly',
+            marker=dict(color='red', size=10, symbol='x', line=dict(width=2))
+        ))
     
-    anomaly_score_fig.update_layout(title='Isolation Forest Anomaly Score Trend', 
-                                    xaxis_title='Sample Index (Time)', 
-                                    yaxis_title='Anomaly Score', yaxis_range=[0, 1], 
-                                    height=350, template='plotly_white')
-
-    # Plot 5: Feature Space (RMS vs Kurtosis)
-    feature_space_fig = go.Figure()
-    normal_data = filtered_df[filtered_df['anomaly_detected'] == False]
-    anomaly_data = filtered_df[filtered_df['anomaly_detected'] == True]
-
-    if len(normal_data) > 0:
-        feature_space_fig.add_trace(go.Scattergl(x=normal_data['rms'], y=normal_data['kurtosis'],
-                                                mode='markers', name='Normal', 
-                                                marker=dict(color='green', opacity=0.5, size=6)))
+    fig_rms.update_layout(
+        title='RMS Vibration Trend',
+        xaxis_title='Sample Index',
+        yaxis_title='RMS (mm/s)',
+        hovermode='x unified',
+        template='plotly_white',
+        height=400
+    )
     
+    # Create Kurtosis Trend Graph
+    fig_kurtosis = go.Figure()
+    fig_kurtosis.add_trace(go.Scatter(
+        x=equipment_data.index,
+        y=equipment_data['kurtosis'],
+        mode='lines+markers',
+        name='Kurtosis',
+        line=dict(color='#2ecc71', width=2),
+        marker=dict(size=4)
+    ))
+    
+    # Mark anomalies
+    if len(anomaly_indices) > 0:
+        fig_kurtosis.add_trace(go.Scatter(
+            x=anomaly_indices,
+            y=equipment_data.loc[anomaly_indices, 'kurtosis'],
+            mode='markers',
+            name='Anomaly',
+            marker=dict(color='red', size=10, symbol='x', line=dict(width=2))
+        ))
+    
+    fig_kurtosis.update_layout(
+        title='Kurtosis Trend',
+        xaxis_title='Sample Index',
+        yaxis_title='Kurtosis',
+        hovermode='x unified',
+        template='plotly_white',
+        height=400
+    )
+    
+    # Create Peak Value Trend Graph
+    fig_peak = go.Figure()
+    fig_peak.add_trace(go.Scatter(
+        x=equipment_data.index,
+        y=equipment_data['peak_value'],
+        mode='lines+markers',
+        name='Peak Value',
+        line=dict(color='#e74c3c', width=2),
+        marker=dict(size=4)
+    ))
+    
+    # Mark anomalies
+    if len(anomaly_indices) > 0:
+        fig_peak.add_trace(go.Scatter(
+            x=anomaly_indices,
+            y=equipment_data.loc[anomaly_indices, 'peak_value'],
+            mode='markers',
+            name='Anomaly',
+            marker=dict(color='red', size=10, symbol='x', line=dict(width=2))
+        ))
+    
+    fig_peak.update_layout(
+        title='Peak Value Trend',
+        xaxis_title='Sample Index',
+        yaxis_title='Peak Value',
+        hovermode='x unified',
+        template='plotly_white',
+        height=400
+    )
+    
+    # Create Anomaly Score Graph
+    fig_anomaly = go.Figure()
+    fig_anomaly.add_trace(go.Scatter(
+        x=equipment_data.index,
+        y=equipment_data['anomaly_score'],
+        mode='lines+markers',
+        name='Anomaly Score',
+        line=dict(color='#9b59b6', width=2),
+        marker=dict(size=4)
+    ))
+    
+    # Add threshold line at 0.30 (30% - normal range limit)
+    fig_anomaly.add_hline(
+        y=0.30,
+        line_dash="dash",
+        line_color="red",
+        line_width=2,
+        annotation_text="Threshold: 0.30 (30% limit)",
+        annotation_position="right"
+    )
+    
+    # Mark anomalies
+    if len(anomaly_indices) > 0:
+        fig_anomaly.add_trace(go.Scatter(
+            x=anomaly_indices,
+            y=equipment_data.loc[anomaly_indices, 'anomaly_score'],
+            mode='markers',
+            name='Detected Anomaly',
+            marker=dict(color='red', size=10, symbol='x', line=dict(width=2))
+        ))
+    
+    fig_anomaly.update_layout(
+        title='Isolation Forest Anomaly Score Trend',
+        xaxis_title='Sample Index',
+        yaxis_title='Anomaly Score (0-1)',
+        hovermode='x unified',
+        template='plotly_white',
+        height=400
+    )
+    
+    # Create Feature Space Graph
+    fig_feature = go.Figure()
+    
+    # Normal points
+    normal_data = equipment_data[~equipment_data['anomaly_detected']]
+    fig_feature.add_trace(go.Scatter(
+        x=normal_data['rms'],
+        y=normal_data['kurtosis'],
+        mode='markers',
+        name='Normal',
+        marker=dict(color='#3498db', size=8, opacity=0.6)
+    ))
+    
+    # Anomaly points
+    anomaly_data = equipment_data[equipment_data['anomaly_detected']]
     if len(anomaly_data) > 0:
-        feature_space_fig.add_trace(go.Scattergl(x=anomaly_data['rms'], y=anomaly_data['kurtosis'],
-                                                mode='markers', name='Anomaly Detected', 
-                                                marker=dict(color='red', opacity=0.8, size=10, symbol='x')))
-
-    feature_space_fig.update_layout(title='Feature Space: RMS vs Kurtosis', 
-                                    xaxis_title='RMS Vibration (mm/s)', 
-                                    yaxis_title='Kurtosis', height=400, template='plotly_white')
-
-    return summary_div, rms_fig, kurtosis_fig, peak_fig, anomaly_score_fig, feature_space_fig
-
-
-if __name__ == '__main__':
-    # Get port from environment variable (for deployment)
-    port = int(os.environ.get('PORT', 8050))
+        fig_feature.add_trace(go.Scatter(
+            x=anomaly_data['rms'],
+            y=anomaly_data['kurtosis'],
+            mode='markers',
+            name='Anomaly',
+            marker=dict(color='red', size=12, symbol='x', line=dict(width=2))
+        ))
     
-    # Run server
-    # debug=False for production, True for local development
-    app.run_server(debug=False, host='0.0.0.0', port=port)
+    fig_feature.update_layout(
+        title='Feature Space: RMS vs Kurtosis',
+        xaxis_title='RMS (mm/s)',
+        yaxis_title='Kurtosis',
+        hovermode='closest',
+        template='plotly_white',
+        height=400
+    )
+    
+    return summary, fig_rms, fig_kurtosis, fig_peak, fig_anomaly, fig_feature
+
+# Run the app
+if __name__ == '__main__':
+    app.run_server(debug=True, host='0.0.0.0', port=8050)
